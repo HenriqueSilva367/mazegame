@@ -1,124 +1,158 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
-import { io } from "socket.io-client";
-import { ToastContainer, toast } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import React, { useEffect, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
 
-const generateMaze = (size: number): string[][] => {
-  const rows = size * 2 + 1;
-  const cols = size * 2 + 1;
-  const maze = Array.from({ length: rows }, () => Array(cols).fill("1"));
-
-  const carvePath = (x: number, y: number) => {
-    maze[x][y] = "0";
-    const directions = [
-      [0, -2],
-      [0, 2],
-      [-2, 0],
-      [2, 0],
-    ].sort(() => Math.random() - 0.5);
-
-    for (const [dx, dy] of directions) {
-      const nx = x + dx,
-        ny = y + dy;
-      if (
-        nx > 0 &&
-        nx < rows - 1 &&
-        ny > 0 &&
-        ny < cols - 1 &&
-        maze[nx][ny] === "1"
-      ) {
-        maze[x + dx / 2][y + dy / 2] = "0";
-        carvePath(nx, ny);
-      }
-    }
-  };
-
-  maze[1][1] = "E";
-  carvePath(1, 1);
-  maze[rows - 2][cols - 2] = "S";
-  return maze;
-};
-
-const Game = () => {
-  const [size, setSize] = useState(10);
-  const [maze, setMaze] = useState<string[][]>(generateMaze(size));
-  const [playerPos, setPlayerPos] = useState({ x: 1, y: 1 });
-  const [trail, setTrail] = useState<boolean[][]>(
-    Array.from({ length: maze.length }, () => Array(maze[0].length).fill(false))
-  );
-  const canvasRef = useRef<HTMLCanvasElement | null>(null); // Definição do canvasRef
-  const [socket, setSocket] = useState<any>(null);
+const GameCanvas = () => {
+  const [maze, setMaze] = useState<string[][]>([]);
+  const [players, setPlayers] = useState<{
+    [key: string]: { x: number; y: number };
+  }>({});
+  const [playerPos, setPlayerPos] = useState({ x: 0, y: 0 });
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [size, setSize] = useState(5); // complexidade
+  const [toast, setToast] = useState<string | null>(null);
+  const [gameOver, setGameOver] = useState<boolean>(false);
+  const [path, setPath] = useState<{ x: number; y: number }[]>([]); // Para armazenar o rastro
+  const [exitPos, setExitPos] = useState<{ x: number; y: number } | null>(null); // Para armazenar a saída
 
   useEffect(() => {
     const newSocket = io("http://localhost:3000");
     setSocket(newSocket);
-    return () => newSocket.close();
+
+    newSocket.on("startGame", (mazeFromServer) => {
+      setMaze(mazeFromServer);
+      findValidStartingPosition(mazeFromServer);
+      findExitPosition(mazeFromServer); // Encontrar a saída
+      showToast("Jogo iniciado com sucesso!", "success");
+    });
+
+    newSocket.on("updatePlayers", (playersFromServer) => {
+      setPlayers(playersFromServer);
+    });
+
+    newSocket.on("gameOver", (winnerId) => {
+      setGameOver(true);
+      showToast(`Jogador ${winnerId} venceu!`, "success");
+    });
+
+    return () => {
+      newSocket.close();
+    };
   }, []);
 
   useEffect(() => {
-    setMaze(generateMaze(size));
-    setPlayerPos({ x: 1, y: 1 });
-    setTrail(
-      Array.from({ length: size * 2 + 1 }, () =>
-        Array(size * 2 + 1).fill(false)
-      )
-    );
-  }, [size]);
-
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    const { x, y } = playerPos;
-    let newPos = { ...playerPos };
-
-    if (event.key === "ArrowUp" && maze[x - 1]?.[y] !== "1")
-      newPos = { x: x - 1, y };
-    if (event.key === "ArrowDown" && maze[x + 1]?.[y] !== "1")
-      newPos = { x: x + 1, y };
-    if (event.key === "ArrowLeft" && maze[x]?.[y - 1] !== "1")
-      newPos = { x, y: y - 1 };
-    if (event.key === "ArrowRight" && maze[x]?.[y + 1] !== "1")
-      newPos = { x, y: y + 1 };
-
-    if (newPos.x === maze.length - 2 && newPos.y === maze[0].length - 2) {
-      toast.success("Você ganhou a partida! 🎉");
+    if (socket) {
+      socket.emit("playerJoined", playerPos);
     }
+  }, [socket]);
 
-    if (newPos !== playerPos) {
-      setPlayerPos(newPos);
-      setTrail((prevTrail) => {
-        const newTrail = prevTrail.map((row) => [...row]);
-        newTrail[newPos.x][newPos.y] = true;
-        return newTrail;
-      });
-      socket?.emit("move", newPos);
+  const findValidStartingPosition = (maze: string[][]) => {
+    for (let x = 0; x < maze.length; x++) {
+      for (let y = 0; y < maze[0].length; y++) {
+        if (maze[x][y] === "0") {
+          setPlayerPos({ x, y });
+          return;
+        }
+      }
     }
   };
+
+  // Encontrar a posição de saída
+  const findExitPosition = (maze: string[][]) => {
+    for (let x = 0; x < maze.length; x++) {
+      for (let y = 0; y < maze[0].length; y++) {
+        if (maze[x][y] === "E") {
+          setExitPos({ x, y });
+          return;
+        }
+      }
+    }
+  };
+
+  const showToast = (message: string, type: "success" | "error") => {
+    setToast(message);
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  // Função que verifica se a movimentação é válida
+  const isValidMove = (x: number, y: number) => {
+    if (x < 0 || y < 0 || x >= maze.length || y >= maze[0].length) {
+      return false; // Checa se a posição está fora do labirinto
+    }
+    if (maze[x][y] === "1") {
+      return false; // Checa se a posição é um obstáculo (parede)
+    }
+    return true; // A posição é válida
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (gameOver) return;
+      let newX = playerPos.x;
+      let newY = playerPos.y;
+
+      switch (e.key) {
+        case "ArrowUp":
+          if (isValidMove(newX - 1, newY)) newX -= 1;
+          break;
+        case "ArrowDown":
+          if (isValidMove(newX + 1, newY)) newX += 1;
+          break;
+        case "ArrowLeft":
+          if (isValidMove(newX, newY - 1)) newY -= 1;
+          break;
+        case "ArrowRight":
+          if (isValidMove(newX, newY + 1)) newY += 1;
+          break;
+      }
+
+      // Verifica se o jogador chegou na saída
+      if (newX === exitPos?.x && newY === exitPos?.y) {
+        showToast("Você ganhou a partida! 🎉", "success");
+        setGameOver(true); // Marcando o jogo como terminado
+      }
+
+      if (newX !== playerPos.x || newY !== playerPos.y) {
+        setPlayerPos({ x: newX, y: newY });
+        setPath((prevPath) => [...prevPath, { x: newX, y: newY }]); // Atualizando a trilha
+        if (socket) {
+          socket.emit("move", { x: newX, y: newY });
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [playerPos, gameOver, exitPos, socket]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    if (!maze.length || !maze[0].length) return;
 
-    const cellSize = Math.max(800 / maze[0].length, 5);
+    // Ajustar o tamanho do canvas baseado na complexidade
+    const canvasWidth = Math.min(800, maze[0].length * 40); // Tamanho máximo do canvas
+    const canvasHeight = Math.min(800, maze.length * 40); // Tamanho máximo do canvas
+    canvas.width = canvasWidth;
+    canvas.height = canvasHeight;
+
+    const cellSize = Math.min(
+      canvasWidth / maze[0].length,
+      canvasHeight / maze.length
+    );
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Desenhando o labirinto
     maze.forEach((row, rowIndex) => {
       row.forEach((cell, colIndex) => {
-        if (trail[rowIndex][colIndex]) {
-          ctx.fillStyle = "rgba(128, 128, 128, 0.5)"; // Cinza semitransparente para o rastro
-        } else {
-          ctx.fillStyle =
-            cell === "1"
-              ? "black"
-              : cell === "S"
-              ? "green"
-              : cell === "E"
-              ? "red"
-              : "white";
-        }
-
+        ctx.fillStyle = cell === "1" ? "black" : "white";
         ctx.fillRect(
           colIndex * cellSize,
           rowIndex * cellSize,
@@ -128,44 +162,82 @@ const Game = () => {
       });
     });
 
-    // Desenha o avatar
-    ctx.fillStyle = "yellow";
-    ctx.beginPath();
-    ctx.arc(
-      playerPos.y * cellSize + cellSize / 2,
-      playerPos.x * cellSize + cellSize / 2,
-      cellSize / 2.5,
-      0,
-      2 * Math.PI
-    );
-    ctx.fill();
-  }, [maze, playerPos, trail]);
+    // Desenhando a saída
+    if (exitPos) {
+      ctx.fillStyle = "red"; // Usando vermelho para a saída
+      ctx.beginPath();
+      ctx.arc(
+        exitPos.y * cellSize + cellSize / 2,
+        exitPos.x * cellSize + cellSize / 2,
+        cellSize / 2.5,
+        0,
+        2 * Math.PI
+      );
+      ctx.fill();
+    }
+
+    // Desenhando o rastro do avatar
+    path.forEach(({ x, y }) => {
+      ctx.fillStyle = "blue"; // Cor do rastro
+      ctx.beginPath();
+      ctx.arc(
+        y * cellSize + cellSize / 2,
+        x * cellSize + cellSize / 2,
+        cellSize / 2.5,
+        0,
+        2 * Math.PI
+      );
+      ctx.fill();
+    });
+
+    // Desenhando os jogadores
+    Object.entries(players).forEach(([id, { x, y }]) => {
+      ctx.fillStyle = id === socket?.id ? "blue" : "red";
+      ctx.beginPath();
+      ctx.arc(
+        y * cellSize + cellSize / 2,
+        x * cellSize + cellSize / 2,
+        cellSize / 2.5,
+        0,
+        2 * Math.PI
+      );
+      ctx.fill();
+    });
+  }, [maze, players, path, exitPos]); // Dependência de exitPos
 
   return (
-    <div
-      className="flex flex-col items-center min-h-screen bg-gray-900 text-white p-4"
-      onKeyDown={handleKeyDown}
-      tabIndex={0}
-    >
-      <h1 className="text-3xl font-bold mb-4">Labirinto</h1>
-      <input
-        type="range"
-        min="5"
-        max="100"
-        value={size}
-        onChange={(e) => setSize(Number(e.target.value))}
-        className="w-64 mb-4"
-      />
-      <p>Complexidade: {size}</p>
-      <canvas
-        ref={canvasRef}
-        width={maze[0].length * Math.max(800 / maze[0].length, 5)}
-        height={maze.length * Math.max(800 / maze.length, 5)}
-        className="border-2 border-white"
-      />
-      <ToastContainer />
+    <div className="flex flex-col items-center p-4">
+      <h1 className="text-2xl font-semibold mb-4">Bem-vindo ao Labirinto!</h1>
+      {toast && (
+        <div
+          className={`toast p-2 mb-4 rounded ${
+            toast.includes("erro") ? "bg-red-500" : "bg-blue-500"
+          } text-white`}
+        >
+          {toast}
+        </div>
+      )}
+      <canvas ref={canvasRef} className="border-2 border-black mb-4" />
+      <div className="flex items-center gap-2 mb-4">
+        <label className="text-lg">Complexidade:</label>
+        <input
+          type="number"
+          value={size}
+          min="3"
+          max="20"
+          onChange={(e) => setSize(parseInt(e.target.value))}
+          className="border px-2 py-1"
+        />
+        <button
+          onClick={() => socket?.emit("startGameWithComplexity", size)}
+          className="px-4 py-2 bg-blue-500 text-white rounded"
+        >
+          Iniciar Jogo
+        </button>
+      </div>
+      {gameOver && <div className="text-lg font-semibold">Jogo terminado!</div>}
     </div>
   );
 };
 
-export default Game;
+export default GameCanvas;
